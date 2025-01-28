@@ -37,6 +37,8 @@ import { pimlicoBaseSepoliaUrl, pimlicoClient } from "@/utils/clients";
 import { erc7579Actions } from "permissionless/actions/erc7579";
 import { Footer } from "@/components/Footer";
 import { getNonce } from "@/components/NonceManager";
+import { createLazyAccount } from "lazyaccount";
+import { ClientParamsWithMode } from "lazyaccount/utils";
 
 const appId = "webauthn";
 
@@ -45,12 +47,14 @@ export default function Home() {
   const publicClient = usePublicClient();
   const walletClient = useWalletClient();
 
+  const [lazyAccount, setLazyAccount] =
+    useState<ReturnType<typeof createLazyAccount>>();
   const [smartAccountClient, setSmartAccountClient] = useState<
     SmartAccountClient<Transport, Chain, ToSafeSmartAccountReturnType<"0.7">> &
       Erc7579Actions<ToSafeSmartAccountReturnType<"0.7">>
   >();
   const [credential, setCredential] = useState<P256Credential>(() =>
-    JSON.parse(localStorage.getItem("credential") || "null"),
+    JSON.parse(localStorage.getItem("credential") || "null")
   );
   const [validatorIsInstalled, setValidatorIsInstalled] = useState(false);
 
@@ -58,6 +62,37 @@ export default function Home() {
     useState(false);
   const [userOpLoading, setUserOpLoading] = useState(false);
   const [count, setCount] = useState<number>(0);
+
+  const createAccount = useCallback(async () => {
+    const owner = account.address;
+    const walletAccount = walletClient.data;
+
+    if (!owner) {
+      console.error("No owner");
+      return;
+    } else if (!walletAccount) {
+      console.error("No wallet account");
+      return;
+    }
+
+    const params = {
+      executionMode: "send",
+      account: {
+        type: "safe",
+        address: owner,
+        signer: walletAccount,
+        validator: WEBAUTHN_VALIDATOR_ADDRESS,
+        deployedOnChains: [baseSepolia.id],
+      },
+      network: {
+        ...baseSepolia,
+        bundlerUrl: pimlicoBaseSepoliaUrl,
+      },
+    } as ClientParamsWithMode<"send">;
+
+    const _lazyAccount = createLazyAccount(params);
+    setLazyAccount(_lazyAccount);
+  }, [account.address, walletClient.data]);
 
   const createSafe = useCallback(async () => {
     const owner = account.address;
@@ -122,7 +157,7 @@ export default function Home() {
         getWebAuthnValidator({
           pubKey: { x: 0n, y: 0n, prefix: 0 },
           authenticatorId: "",
-        }),
+        })
       );
       if (isValidatorInstalled) {
         setValidatorIsInstalled(true);
@@ -142,7 +177,7 @@ export default function Home() {
       JSON.stringify({
         id: _credential.id,
         publicKey: _credential.publicKey,
-      }),
+      })
     );
   }, [createSafe, credential]);
 
@@ -229,8 +264,9 @@ export default function Home() {
 
     userOperation.signature = encodedSignature;
 
-    const userOpHash =
-      await smartAccountClient.sendUserOperation(userOperation);
+    const userOpHash = await smartAccountClient.sendUserOperation(
+      userOperation
+    );
 
     const receipt = await smartAccountClient.waitForUserOperationReceipt({
       hash: userOpHash,
@@ -241,7 +277,7 @@ export default function Home() {
       await getCount({
         publicClient,
         account: smartAccountClient.account.address,
-      }),
+      })
     );
     setUserOpLoading(false);
   }, [credential, publicClient, smartAccountClient]);
