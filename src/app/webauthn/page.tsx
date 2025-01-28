@@ -5,39 +5,21 @@ import { getCount, getIncrementCalldata } from "@/components/Counter";
 import Image from "next/image";
 import { useCallback, useState } from "react";
 import { useAccount, usePublicClient, useWalletClient } from "wagmi";
-import {
-  toSafeSmartAccount,
-  ToSafeSmartAccountReturnType,
-} from "permissionless/accounts";
-import { Chain, http, Transport } from "viem";
-import { Erc7579Actions } from "permissionless/actions/erc7579";
-import { createSmartAccountClient, SmartAccountClient } from "permissionless";
+import { Address } from "viem";
 import {
   createWebAuthnCredential,
   entryPoint07Address,
   getUserOperationHash,
   P256Credential,
 } from "viem/account-abstraction";
-import {
-  RHINESTONE_ATTESTER_ADDRESS,
-  MOCK_ATTESTER_ADDRESS,
-  getOwnableValidator,
-  encodeValidatorNonce,
-  getAccount,
-  getWebauthnValidatorMockSignature,
-  getWebAuthnValidator,
-  WEBAUTHN_VALIDATOR_ADDRESS,
-  getWebauthnValidatorSignature,
-} from "@rhinestone/module-sdk";
+import { WEBAUTHN_VALIDATOR_ADDRESS } from "@rhinestone/module-sdk";
 import { baseSepolia } from "viem/chains";
-import { getAccountNonce } from "permissionless/actions";
 import { PublicKey } from "ox";
 import { sign } from "ox/WebAuthnP256";
-import { pimlicoBaseSepoliaUrl, pimlicoClient } from "@/utils/clients";
-import { erc7579Actions } from "permissionless/actions/erc7579";
+import { pimlicoBaseSepoliaUrl } from "@/utils/clients";
 import { Footer } from "@/components/Footer";
 import { getNonce } from "@/components/NonceManager";
-import { createLazyAccount } from "lazyaccount";
+import { createLazyAccount, getWebauthnValidatorSignature } from "lazyaccount";
 import { ClientParamsWithMode } from "lazyaccount/utils";
 
 const appId = "webauthn";
@@ -49,10 +31,7 @@ export default function Home() {
 
   const [lazyAccount, setLazyAccount] =
     useState<ReturnType<typeof createLazyAccount>>();
-  const [smartAccountClient, setSmartAccountClient] = useState<
-    SmartAccountClient<Transport, Chain, ToSafeSmartAccountReturnType<"0.7">> &
-      Erc7579Actions<ToSafeSmartAccountReturnType<"0.7">>
-  >();
+  const [smartAccountAddress, setSmartAccountAddress] = useState<Address>();
   const [credential, setCredential] = useState<P256Credential>(() =>
     JSON.parse(localStorage.getItem("credential") || "null")
   );
@@ -63,40 +42,10 @@ export default function Home() {
   const [userOpLoading, setUserOpLoading] = useState(false);
   const [count, setCount] = useState<number>(0);
 
-  const createAccount = useCallback(async () => {
-    const owner = account.address;
-    const walletAccount = walletClient.data;
-
-    if (!owner) {
-      console.error("No owner");
-      return;
-    } else if (!walletAccount) {
-      console.error("No wallet account");
-      return;
-    }
-
-    const params = {
-      executionMode: "send",
-      account: {
-        type: "safe",
-        address: owner,
-        signer: walletAccount,
-        validator: WEBAUTHN_VALIDATOR_ADDRESS,
-        deployedOnChains: [baseSepolia.id],
-      },
-      network: {
-        ...baseSepolia,
-        bundlerUrl: pimlicoBaseSepoliaUrl,
-      },
-    } as ClientParamsWithMode<"send">;
-
-    const _lazyAccount = createLazyAccount(params);
-    setLazyAccount(_lazyAccount);
-  }, [account.address, walletClient.data]);
-
   const createSafe = useCallback(async () => {
     const owner = account.address;
     const walletAccount = walletClient.data;
+
     if (!owner) {
       console.error("No owner");
       return;
@@ -108,61 +57,45 @@ export default function Home() {
       return;
     }
 
-    const ownableValidator = getOwnableValidator({
+    const params = {
+      executionMode: "prepare",
+      account: {
+        type: "safe",
+        address: owner,
+        signer: walletAccount,
+        validator: WEBAUTHN_VALIDATOR_ADDRESS,
+        deployedOnChains: [baseSepolia.id],
+      },
+      network: {
+        ...baseSepolia,
+        bundlerUrl: pimlicoBaseSepoliaUrl,
+      },
+    } as ClientParamsWithMode<"prepare">;
+
+    const lazyAccount = createLazyAccount(params);
+    setLazyAccount(lazyAccount);
+
+    const lazyAccountAddress = await lazyAccount.getAddress();
+    setSmartAccountAddress(lazyAccountAddress);
+
+    console.log("Lazy account address: ", lazyAccountAddress);
+    console.log("Lazy account: ", lazyAccount);
+
+    await lazyAccount.installOwnableValidator({
       owners: [owner],
       threshold: 1,
     });
 
-    const safeAccount = await toSafeSmartAccount({
-      saltNonce: getNonce({
-        appId,
-      }),
-      client: publicClient,
-      owners: [walletAccount],
-      version: "1.4.1",
-      entryPoint: {
-        address: entryPoint07Address,
-        version: "0.7",
-      },
-      safe4337ModuleAddress: "0x7579EE8307284F293B1927136486880611F20002",
-      erc7579LaunchpadAddress: "0x7579011aB74c46090561ea277Ba79D510c6C00ff",
-      attesters: [
-        RHINESTONE_ATTESTER_ADDRESS, // Rhinestone Attester
-        MOCK_ATTESTER_ADDRESS, // Mock Attester - do not use in production
-      ],
-      attestersThreshold: 1,
-      validators: [
-        {
-          address: ownableValidator.address,
-          context: ownableValidator.initData,
-        },
-      ],
-    });
-    const _smartAccountClient = createSmartAccountClient({
-      account: safeAccount,
-      paymaster: pimlicoClient,
-      chain: baseSepolia,
-      userOperation: {
-        estimateFeesPerGas: async () =>
-          (await pimlicoClient.getUserOperationGasPrice()).fast,
-      },
-      bundlerTransport: http(pimlicoBaseSepoliaUrl),
-    }).extend(erc7579Actions());
+    // setCount(await getCount({ publicClient, account: lazyAccountAddress }));
 
-    setSmartAccountClient(_smartAccountClient as any); // eslint-disable-line
-    setCount(await getCount({ publicClient, account: safeAccount.address }));
+    // if (await publicClient?.getCode({ address: lazyAccountAddress })) {
+    //   const isValidatorInstalled =
+    //     await lazyAccount.isWebAuthnValidatorInstalled();
 
-    if (await publicClient?.getCode({ address: safeAccount.address })) {
-      const isValidatorInstalled = await _smartAccountClient.isModuleInstalled(
-        getWebAuthnValidator({
-          pubKey: { x: 0n, y: 0n, prefix: 0 },
-          authenticatorId: "",
-        })
-      );
-      if (isValidatorInstalled) {
-        setValidatorIsInstalled(true);
-      }
-    }
+    //   if (isValidatorInstalled) {
+    //     setValidatorIsInstalled(true);
+    //   }
+    // }
   }, [account, publicClient, walletClient]);
 
   const handleCreateCredential = useCallback(async () => {
@@ -182,66 +115,59 @@ export default function Home() {
   }, [createSafe, credential]);
 
   const handleInstallModule = useCallback(async () => {
-    if (!smartAccountClient) {
-      console.error("No smart account client");
-      return;
-    } else if (!credential) {
+    if (!credential) {
       console.error("No credential");
+      return;
+    } else if (!lazyAccount) {
+      console.error("No lazy account");
+      return;
+    } else if (!smartAccountAddress) {
+      console.error("No smart account address");
       return;
     }
 
     setValidatorInstallationLoading(true);
 
     const { x, y, prefix } = PublicKey.from(credential.publicKey);
-    const validator = getWebAuthnValidator({
+    const installOp = await lazyAccount.installWebAuthnValidator({
       pubKey: { x, y, prefix },
       authenticatorId: credential.id,
     });
+    console.log("installOp: ", installOp);
+    // const receipt = await smartAccountClient.waitForUserOperationReceipt({
+    //   hash: installOp,
+    // });
+    // console.log("receipt", receipt);
 
-    const installOp = await smartAccountClient.installModule(validator);
+    const isValidatorInstalled =
+      await lazyAccount.isWebAuthnValidatorInstalled();
 
-    const receipt = await smartAccountClient.waitForUserOperationReceipt({
-      hash: installOp,
-    });
-    console.log("receipt", receipt);
-
-    if (await smartAccountClient.isModuleInstalled(validator)) {
+    if (isValidatorInstalled) {
       setValidatorIsInstalled(true);
     }
+
     setValidatorInstallationLoading(false);
-  }, [credential, smartAccountClient]);
+  }, [credential, lazyAccount, smartAccountAddress]);
 
   const handleSendUserOp = useCallback(async () => {
-    if (!smartAccountClient) {
-      console.error("No smart account client");
-      return;
-    } else if (!credential) {
+    if (!credential) {
       console.error("No credential");
       return;
     } else if (!publicClient) {
       console.error("No public client");
       return;
+    } else if (!lazyAccount) {
+      console.error("No lazy account");
+      return;
+    } else if (!smartAccountAddress) {
+      console.error("No smart account address");
+      return;
     }
 
     setUserOpLoading(true);
 
-    const nonce = await getAccountNonce(publicClient, {
-      address: smartAccountClient.account.address,
-      entryPointAddress: entryPoint07Address,
-      key: encodeValidatorNonce({
-        account: getAccount({
-          address: smartAccountClient.account.address,
-          type: "safe",
-        }),
-        validator: WEBAUTHN_VALIDATOR_ADDRESS,
-      }),
-    });
-
-    const userOperation = await smartAccountClient.prepareUserOperation({
-      account: smartAccountClient.account,
-      calls: [getIncrementCalldata()],
-      nonce,
-      signature: getWebauthnValidatorMockSignature(),
+    const userOperation = await lazyAccount.getUserOp({
+      executions: [getIncrementCalldata()],
     });
 
     const userOpHashToSign = getUserOperationHash({
@@ -264,11 +190,9 @@ export default function Home() {
 
     userOperation.signature = encodedSignature;
 
-    const userOpHash = await smartAccountClient.sendUserOperation(
-      userOperation
-    );
+    const userOpHash = await lazyAccount.sendUserOp({ userOp: userOperation });
 
-    const receipt = await smartAccountClient.waitForUserOperationReceipt({
+    const receipt = await lazyAccount.waitForUserOpReceipt({
       hash: userOpHash,
     });
     console.log("UserOp receipt: ", receipt);
@@ -276,11 +200,11 @@ export default function Home() {
     setCount(
       await getCount({
         publicClient,
-        account: smartAccountClient.account.address,
+        account: smartAccountAddress,
       })
     );
     setUserOpLoading(false);
-  }, [credential, publicClient, smartAccountClient]);
+  }, [credential, publicClient, lazyAccount, smartAccountAddress]);
 
   return (
     <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
@@ -307,17 +231,15 @@ export default function Home() {
         </ol>
         <div className="font-[family-name:var(--font-geist-mono)] text-sm">
           <div>
-            {smartAccountClient && (
-              <>Smart account: {smartAccountClient.account.address}</>
-            )}
+            {smartAccountAddress && <>Smart account: {smartAccountAddress}</>}
           </div>
           <div>
-            {smartAccountClient && credential && (
+            {smartAccountAddress && credential && (
               <>Webauthn credential: {credential.id}</>
             )}
           </div>
           <div>
-            {smartAccountClient && (
+            {smartAccountAddress && (
               <>Validator {!validatorIsInstalled && "not"} installed</>
             )}
           </div>

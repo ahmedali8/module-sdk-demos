@@ -1,6 +1,7 @@
+import { Execution } from "lazyaccount/types";
 import { Address, parseAbi, PublicClient } from "viem";
 
-export const getIncrementCalldata = () => {
+export const getIncrementCalldata = (): Execution => {
   return {
     to: "0x19575934a9542be941d3206f3ecff4a5ffb9af88",
     value: BigInt(0),
@@ -21,6 +22,7 @@ export const getCount = async ({
     functionName: "number",
     args: [account],
   })) as number;
+  console.log("count: ", count);
   return count;
 };
 
