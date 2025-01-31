@@ -5,22 +5,23 @@ import { getCount, getIncrementCalldata } from "@/components/Counter";
 import Image from "next/image";
 import { useCallback, useState } from "react";
 import { useAccount, usePublicClient, useWalletClient } from "wagmi";
-import { Address } from "viem";
+import { Address, Hash } from "viem";
 import {
   createWebAuthnCredential,
-  entryPoint07Address,
-  getUserOperationHash,
   P256Credential,
 } from "viem/account-abstraction";
-import { WEBAUTHN_VALIDATOR_ADDRESS } from "@rhinestone/module-sdk";
 import { baseSepolia } from "viem/chains";
 import { PublicKey } from "ox";
 import { sign } from "ox/WebAuthnP256";
 import { pimlicoBaseSepoliaUrl } from "@/utils/clients";
 import { Footer } from "@/components/Footer";
-import { getNonce } from "@/components/NonceManager";
-import { createLazyAccount, getWebauthnValidatorSignature } from "lazyaccount";
-import { ClientParamsWithMode } from "lazyaccount/utils";
+import {
+  createLazyAccount,
+  getWebauthnValidatorMockSignature,
+  getWebauthnValidatorSignature,
+} from "lazyaccount";
+import { GLOBAL_CONSTANTS } from "@rhinestone/module-sdk";
+import { LazyAccountParams } from "lazyaccount/types";
 
 const appId = "webauthn";
 
@@ -30,7 +31,7 @@ export default function Home() {
   const walletClient = useWalletClient();
 
   const [lazyAccount, setLazyAccount] =
-    useState<ReturnType<typeof createLazyAccount>>();
+    useState<Awaited<ReturnType<typeof createLazyAccount>>>();
   const [smartAccountAddress, setSmartAccountAddress] = useState<Address>();
   const [credential, setCredential] = useState<P256Credential>(() =>
     JSON.parse(localStorage.getItem("credential") || "null")
@@ -58,44 +59,39 @@ export default function Home() {
     }
 
     const params = {
-      executionMode: "prepare",
+      executionMode: "send",
       account: {
         type: "safe",
         address: owner,
         signer: walletAccount,
-        validator: WEBAUTHN_VALIDATOR_ADDRESS,
+        validator: GLOBAL_CONSTANTS.WEBAUTHN_VALIDATOR_ADDRESS,
         deployedOnChains: [baseSepolia.id],
       },
       network: {
         ...baseSepolia,
         bundlerUrl: pimlicoBaseSepoliaUrl,
       },
-    } as ClientParamsWithMode<"prepare">;
+    } as LazyAccountParams<"send">;
 
-    const lazyAccount = createLazyAccount(params);
+    const lazyAccount = await createLazyAccount(params);
     setLazyAccount(lazyAccount);
 
-    const lazyAccountAddress = await lazyAccount.getAddress();
+    const lazyAccountAddress = lazyAccount.address;
     setSmartAccountAddress(lazyAccountAddress);
-
-    console.log("Lazy account address: ", lazyAccountAddress);
-    console.log("Lazy account: ", lazyAccount);
 
     await lazyAccount.installOwnableValidator({
       owners: [owner],
       threshold: 1,
     });
 
-    // setCount(await getCount({ publicClient, account: lazyAccountAddress }));
+    setCount(await getCount({ publicClient, account: lazyAccountAddress }));
 
-    // if (await publicClient?.getCode({ address: lazyAccountAddress })) {
-    //   const isValidatorInstalled =
-    //     await lazyAccount.isWebAuthnValidatorInstalled();
+    const isValidatorInstalled =
+      await lazyAccount.isWebAuthnValidatorInstalled();
 
-    //   if (isValidatorInstalled) {
-    //     setValidatorIsInstalled(true);
-    //   }
-    // }
+    if (isValidatorInstalled) {
+      setValidatorIsInstalled(true);
+    }
   }, [account, publicClient, walletClient]);
 
   const handleCreateCredential = useCallback(async () => {
@@ -129,15 +125,22 @@ export default function Home() {
     setValidatorInstallationLoading(true);
 
     const { x, y, prefix } = PublicKey.from(credential.publicKey);
-    const installOp = await lazyAccount.installWebAuthnValidator({
+    const installOp: Hash = (await lazyAccount.installWebAuthnValidator({
       pubKey: { x, y, prefix },
       authenticatorId: credential.id,
-    });
+    })) as Hash;
     console.log("installOp: ", installOp);
-    // const receipt = await smartAccountClient.waitForUserOperationReceipt({
-    //   hash: installOp,
-    // });
-    // console.log("receipt", receipt);
+
+    try {
+      const receipt = await lazyAccount.waitForUserOpReceipt({
+        hash: installOp,
+      });
+      console.log("receipt", receipt);
+    } catch (error) {
+      setValidatorInstallationLoading(false);
+
+      console.log("error", error);
+    }
 
     const isValidatorInstalled =
       await lazyAccount.isWebAuthnValidatorInstalled();
@@ -168,14 +171,16 @@ export default function Home() {
 
     const userOperation = await lazyAccount.getUserOp({
       executions: [getIncrementCalldata()],
+      signature: getWebauthnValidatorMockSignature(),
     });
 
-    const userOpHashToSign = getUserOperationHash({
-      chainId: baseSepolia.id,
-      entryPointAddress: entryPoint07Address,
-      entryPointVersion: "0.7",
-      userOperation,
+    console.log("userOperation", userOperation);
+
+    const userOpHashToSign = await lazyAccount.getUserOpHash({
+      userOp: userOperation,
     });
+
+    console.log("userOpHashToSign", userOpHashToSign);
 
     const { metadata: webauthn, signature } = await sign({
       credentialId: credential.id,
